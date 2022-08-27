@@ -146,4 +146,54 @@ class Chain extends TaggableStore implements LockProvider
             ->whenEmpty(fn () => throw Exception::lockProvider())
             ->first();
     }
+
+    /**
+     * Retrieve multiple items from the cache by key.
+     *
+     * Items not found in the cache will have a null value.
+     *
+     * @param  array  $keys
+     * @return array
+     */
+    public function many(array $keys)
+    {
+        return $this->cacheGetMany($keys);
+    }
+
+    private function cacheGetMany(array $keys, int $layer = 0): array
+    {
+        if ($layer >= $this->providers->count()) {
+            return [];
+        }
+
+        $cachedValues = $this->providers->get($layer)->many($keys);
+
+        $foundEntries = array_filter($cachedValues);
+        if (count($foundEntries) === count($keys)) {
+            return $cachedValues;
+        }
+
+        $unfoundEntryKeys = array_keys(array_filter($cachedValues, fn($a) => is_null($a)));
+        $nextLayerLookup = $this->cacheGetMany($unfoundEntryKeys, $layer + 1);
+
+        $nextLayerMatches = array_filter($nextLayerLookup);
+        if (count($nextLayerMatches)) {
+            if ($this->ttl > 0) {
+                $this->providers->get($layer)->putMany($nextLayerMatches, $this->ttl);
+            } else {
+                $provider = $this->providers->get($layer);
+                foreach($nextLayerMatches as $key => $value) {
+                    $provider->forever($key, $value);
+                }
+            }
+        }
+
+        $values = array_map(fn($key) => $foundEntries[$key] ?? $nextLayerMatches[$key] ?? null, $keys);
+        return array_combine($keys, $values);
+    }
+
+    public function putMany(array $values, $seconds)
+    {
+        return $this->handle('putMany', ...func_get_args());
+    }
 }
